@@ -26,7 +26,7 @@ function parseArgs(str) {
 // ============ HTTP 工具 (带超时保护) ============
 
 function httpGet(url, timeoutSec) {
-  var ms = (timeoutSec || 3) * 1000;
+  var ms = (timeoutSec || 5) * 1000;
   return new Promise(function (resolve, reject) {
     var settled = false;
     // 兜底超时: 即使 $httpClient 回调不触发, 也会超时
@@ -37,7 +37,8 @@ function httpGet(url, timeoutSec) {
       }
     }, ms);
     try {
-      $httpClient.get(url, { timeout: ms }, function (error, response, data) {
+      // policy: DIRECT 强制直连, 不走代理
+      $httpClient.get(url, { timeout: ms, policy: 'DIRECT' }, function (error, response, data) {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -140,7 +141,7 @@ function buildLines(net, isp) {
 // ============ 主入口 ============
 
 var args = parseArgs(typeof $argument !== 'undefined' ? $argument : '');
-var pTimeout = parseInt(args.TIMEOUT || '3', 10) || 3;
+var pTimeout = parseInt(args.TIMEOUT || '5', 10) || 5;
 var pIcon = args.icon || 'antenna.radiowaves.left.and.right';
 var pIconColor = args['icon-color'] || '#34C759';
 

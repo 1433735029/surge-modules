@@ -14,7 +14,7 @@
 // ============ 参数解析 ============
 
 function parseArgs(str) {
-  const obj = {};
+  var obj = {};
   if (!str) return obj;
   str.split('&').forEach(function (pair) {
     var idx = pair.indexOf('=');
@@ -23,15 +23,34 @@ function parseArgs(str) {
   return obj;
 }
 
-// ============ HTTP 工具 ============
+// ============ HTTP 工具 (带超时保护) ============
 
 function httpGet(url, timeoutSec) {
+  var ms = (timeoutSec || 3) * 1000;
   return new Promise(function (resolve, reject) {
-    var opts = { timeout: (timeoutSec || 5) * 1000 };
-    $httpClient.get(url, opts, function (error, response, data) {
-      if (error) return reject(new Error(String(error)));
-      resolve(data);
-    });
+    var settled = false;
+    // 兜底超时: 即使 $httpClient 回调不触发, 也会超时
+    var timer = setTimeout(function () {
+      if (!settled) {
+        settled = true;
+        reject(new Error('timeout'));
+      }
+    }, ms);
+    try {
+      $httpClient.get(url, { timeout: ms }, function (error, response, data) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) return reject(new Error(String(error)));
+        resolve(data);
+      });
+    } catch (e) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(e);
+      }
+    }
   });
 }
 
@@ -120,19 +139,34 @@ function buildLines(net, isp) {
 
 // ============ 主入口 ============
 
-async function run() {
-  var args = parseArgs(typeof $argument !== 'undefined' ? $argument : '');
-  var timeout = parseInt(args.TIMEOUT || '5', 10) || 5;
-  var icon = args.icon || 'antenna.radiowaves.left.and.right';
-  var iconColor = args['icon-color'] || '#34C759';
+var args = parseArgs(typeof $argument !== 'undefined' ? $argument : '');
+var pTimeout = parseInt(args.TIMEOUT || '3', 10) || 3;
+var pIcon = args.icon || 'antenna.radiowaves.left.and.right';
+var pIconColor = args['icon-color'] || '#34C759';
 
+// 全局兜底: 确保 $done() 一定被调用 (10 秒)
+var globalTimeout = setTimeout(function () {
+  $done({
+    title: '网络状态',
+    content: '⚠️ 查询超时, 请检查网络',
+    icon: 'exclamationmark.triangle',
+    'icon-color': '#FF9500'
+  });
+}, 10000);
+
+function finish(result) {
+  clearTimeout(globalTimeout);
+  $done(result);
+}
+
+async function run() {
   // ---- 事件模式: 网络变化即时通知 ----
   if (args.TYPE === 'EVENT') {
     var delayMs = (parseInt(args.EVENT_DELAY || '1', 10) || 1) * 1000;
     await sleep(delayMs);
 
     var net = getLocalNetwork();
-    var isp = await getISP(timeout);
+    var isp = await getISP(pTimeout);
     var lines = buildLines(net, isp);
     var nw = getNetworkLabel(net);
 
@@ -146,37 +180,48 @@ async function run() {
     }
 
     $notification.post('🌐 网络已切换', subtitle, lines.join('\n'));
-    $done();
+    finish();
     return;
   }
 
   // ---- 面板模式 ----
   var net2 = getLocalNetwork();
-  var isp2 = await getISP(timeout);
+  var isp2 = await getISP(pTimeout);
   var lines2 = buildLines(net2, isp2);
 
-  $done({
+  finish({
     title: '网络状态',
     content: lines2.join('\n'),
-    icon: icon,
-    'icon-color': iconColor
+    icon: pIcon,
+    'icon-color': pIconColor
   });
 }
 
 run().catch(function (err) {
   var msg = (err && err.message) ? err.message : String(err);
-  var args = parseArgs(typeof $argument !== 'undefined' ? $argument : '');
 
   if (args.TYPE === 'EVENT') {
     $notification.post('🌐 网络状态', '查询出错', msg);
-    $done();
+    finish();
     return;
   }
 
-  $done({
-    title: '网络状态',
-    content: '❌ 查询出错: ' + msg,
-    icon: 'exclamationmark.triangle',
-    'icon-color': '#FF3B30'
-  });
+  // 面板出错时仍然显示本地网络信息 (不含 ISP)
+  try {
+    var net = getLocalNetwork();
+    var lines = buildLines(net, null);
+    finish({
+      title: '网络状态',
+      content: lines.join('\n'),
+      icon: pIcon,
+      'icon-color': pIconColor
+    });
+  } catch (e) {
+    finish({
+      title: '网络状态',
+      content: '❌ 查询出错: ' + msg,
+      icon: 'exclamationmark.triangle',
+      'icon-color': '#FF3B30'
+    });
+  }
 });

@@ -8,7 +8,7 @@
  *   4. 显示 IPv4 / IPv6 协议支持
  *   5. 切换网络时即时通知
  *
- * 数据源: ip.cip.cc (主) / ip-api.com (备)
+ * 数据源: myip.ipip.net (主) / ip-api.com HTTP (备)
  */
 
 // ============ 参数解析 ============
@@ -29,7 +29,6 @@ function httpGet(url, timeoutSec) {
   var ms = (timeoutSec || 5) * 1000;
   return new Promise(function (resolve, reject) {
     var settled = false;
-    // 兜底超时: 即使 $httpClient 回调不触发, 也会超时
     var timer = setTimeout(function () {
       if (!settled) {
         settled = true;
@@ -37,7 +36,6 @@ function httpGet(url, timeoutSec) {
       }
     }, ms);
     try {
-      // policy: DIRECT 强制直连, 不走代理
       $httpClient.get(url, { timeout: ms, policy: 'DIRECT' }, function (error, response, data) {
         if (settled) return;
         settled = true;
@@ -66,7 +64,6 @@ function getLocalNetwork() {
   var cellular = ($network && $network.cellular) || {};
   return {
     ssid: wifi.ssid || '',
-    bssid: wifi.bssid || '',
     carrier: cellular.carrier || '',
     radio: cellular.radio || '',
     ipv4: ($network && $network.ipv4) || '',
@@ -74,25 +71,42 @@ function getLocalNetwork() {
   };
 }
 
-// 运营商: 先查 API, 失败则用蜂窝 carrier 兜底
+// ISP 名称归一化 (参考 NetRadar)
+function fmtISP(isp) {
+  if (!isp) return '未知';
+  var s = String(isp).toLowerCase();
+  var raw = String(isp).replace(/\s*[\(（]中国[\)）]\s*/g, '').replace(/\s+/g, ' ').trim();
+  if (/(^|[\s-])(cmcc|cmnet|cmi|mobile)\b|移动/.test(s)) return '中国移动';
+  if (/(^|[\s-])(chinanet|telecom|ctcc|ct)\b|电信/.test(s))  return '中国电信';
+  if (/(^|[\s-])(unicom|cncgroup|netcom|link)\b|联通/.test(s)) return '中国联通';
+  if (/(^|[\s-])(cbn|broadcast)\b|广电/.test(s))             return '中国广电';
+  return raw || '未知';
+}
+
+// 运营商查询: myip.ipip.net (主) / ip-api.com HTTP (备)
 async function getISP(timeoutSec) {
-  // 主源 ip.cip.cc — 返回纯文本, 含 "运营商: xxx"
+  // 主源: myip.ipip.net/json — location 数组最后一项为运营商
   try {
-    var body = await httpGet('https://ip.cip.cc/', timeoutSec);
+    var body = await httpGet('https://myip.ipip.net/json', timeoutSec);
     if (body) {
-      var m = body.match(/运营商[\t ]*:[\t ]*([^\r\n]+)/);
-      if (m && m[1] && m[1].trim()) return m[1].trim();
+      var j = JSON.parse(body);
+      if (j && j.data && j.data.location && j.data.location.length > 0) {
+        var isp = j.data.location[j.data.location.length - 1];
+        if (isp) return fmtISP(isp);
+      }
     }
   } catch (_) {}
 
-  // 备源 ip-api.com — 返回 JSON
+  // 备源: ip-api.com (HTTP, 免费版不支持 HTTPS)
   try {
     var body2 = await httpGet(
-      'https://ip-api.com/json/?lang=zh-CN&fields=status,isp',
+      'http://ip-api.com/json/?lang=zh-CN&fields=status,isp',
       timeoutSec
     );
-    var j = JSON.parse(body2);
-    if (j && j.status === 'success' && j.isp) return j.isp;
+    if (body2) {
+      var j2 = JSON.parse(body2);
+      if (j2 && j2.status === 'success' && j2.isp) return fmtISP(j2.isp);
+    }
   } catch (_) {}
 
   return null;
@@ -145,7 +159,7 @@ var pTimeout = parseInt(args.TIMEOUT || '5', 10) || 5;
 var pIcon = args.icon || 'antenna.radiowaves.left.and.right';
 var pIconColor = args['icon-color'] || '#34C759';
 
-// 全局兜底: 确保 $done() 一定被调用 (10 秒)
+// 全局兜底: 确保 $done() 一定被调用
 var globalTimeout = setTimeout(function () {
   $done({
     title: '网络状态',
@@ -153,7 +167,7 @@ var globalTimeout = setTimeout(function () {
     icon: 'exclamationmark.triangle',
     'icon-color': '#FF9500'
   });
-}, 10000);
+}, 15000);
 
 function finish(result) {
   clearTimeout(globalTimeout);
@@ -207,7 +221,7 @@ run().catch(function (err) {
     return;
   }
 
-  // 面板出错时仍然显示本地网络信息 (不含 ISP)
+  // 面板出错时仍然显示本地网络信息
   try {
     var net = getLocalNetwork();
     var lines = buildLines(net, null);
